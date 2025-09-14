@@ -1,7 +1,7 @@
 services:
   - type: web
-    name: esp32-chatgpt-proxy
+    name: esp32-hf-proxy
     env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn proxy:app --host 0.0.0.0 --port 10000
     plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn proxy_hf:app --host 0.0.0.0 --port $PORT"
