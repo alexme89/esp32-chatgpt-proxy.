@@ -1,34 +1,26 @@
-from fastapi import FastAPI, UploadFile
-from fastapi.responses import StreamingResponse
-import openai, io
+from fastapi import FastAPI, File, UploadFile
+import openai
+import io
 
 app = FastAPI()
 
 @app.post("/process_audio/")
-async def process_audio(file: UploadFile):
-    audio_bytes = await file.read()
+async def process_audio(file: UploadFile = File(...)):
+    try:
+        audio_bytes = await file.read()
 
-    # 1. Transcripción con Whisper
-    transcript = openai.audio.transcriptions.create(
-        model="gpt-4o-mini-transcribe",
-        file=("audio.wav", io.BytesIO(audio_bytes), "audio/wav")
-    )
-    text = transcript.text
+        # Mandar el audio a OpenAI (Whisper para transcripción + GPT respuesta)
+        transcript = openai.audio.transcriptions.create(
+            model="gpt-4o-mini-transcribe",
+            file=io.BytesIO(audio_bytes)
+        )
 
-    # 2. Respuesta de ChatGPT
-    response = openai.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role":"system","content":"Eres un asistente tipo Jarvis."},
-                  {"role":"user","content": text}]
-    )
-    reply = response.choices[0].message.content
+        respuesta = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": transcript.text}]
+        )
 
-    # 3. TTS con OpenAI
-    speech = openai.audio.speech.create(
-        model="gpt-4o-mini-tts",
-        voice="alloy",
-        input=reply
-    )
+        return {"texto": transcript.text, "respuesta": respuesta.choices[0].message["content"]}
 
-    # 4. Regresar audio WAV
-    return StreamingResponse(io.BytesIO(speech.read()), media_type="audio/wav")
+    except Exception as e:
+        return {"error": str(e)}
