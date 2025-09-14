@@ -1,4 +1,9 @@
-fastapi==0.116.1
-uvicorn==0.35.0
-requests==2.32.0
-python-multipart==0.0.6
+Flask==2.3.3
+torch==2.0.1
+torchaudio==2.0.2
+transformers==4.35.0
+librosa==0.10.1
+gtts==2.4.0
+soundfile==0.12.1
+numpy==1.24.3
+requests==2.31.0
