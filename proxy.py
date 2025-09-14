@@ -14,7 +14,9 @@ app.add_middleware(
 
 # URL del modelo de Hugging Face
 HF_API_URL = "https://api-inference.huggingface.co/models/openai/whisper-small"
-HF_TOKEN = "TU_HUGGINGFACE_TOKEN_AQUI"
+import os
+HF_TOKEN = os.getenv("HF_TOKEN")
+
 
 headers = {"Authorization": f"Bearer {HF_TOKEN}"}
 
@@ -26,3 +28,4 @@ async def process_audio(file: UploadFile = File(...)):
         return response.json()
     except:
         return {"error": "Error al procesar el audio", "status_code": response.status_code}
+
