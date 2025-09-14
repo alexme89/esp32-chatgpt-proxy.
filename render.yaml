@@ -12,4 +12,3 @@ services:
       - key: PYTHONPATH
         value: "/opt/render/project/src"
 
-
