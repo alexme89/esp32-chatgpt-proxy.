@@ -1,30 +1,46 @@
-# app.py
+# proxy.py
 from flask import Flask, request, jsonify, send_file
 import os
 import tempfile
-import whisper
+from transformers import WhisperProcessor, WhisperForConditionalGeneration
+import torch
+import torchaudio
+import numpy as np
 from gtts import gTTS
 import subprocess
 import random
 
 app = Flask(__name__)
 
-# Cargar modelo Whisper al inicio
-print("🤖 Cargando modelo Whisper...")
-try:
-    # Usar modelo más pequeño para Render gratuito
-    model = whisper.load_model("base")
-    print("✅ Modelo Whisper cargado exitosamente")
-except Exception as e:
-    print(f"❌ Error cargando modelo: {e}")
-    model = None
+# Variables globales para el modelo
+processor = None
+model = None
+
+def load_model():
+    """Cargar modelo Whisper usando Transformers"""
+    global processor, model
+    
+    print("🤖 Cargando modelo Whisper...")
+    try:
+        model_name = "openai/whisper-small"
+        processor = WhisperProcessor.from_pretrained(model_name)
+        model = WhisperForConditionalGeneration.from_pretrained(model_name)
+        print("✅ Modelo Whisper cargado exitosamente")
+        return True
+    except Exception as e:
+        print(f"❌ Error cargando modelo: {e}")
+        return False
+
+# Intentar cargar modelo al inicio
+model_loaded = load_model()
 
 @app.route('/')
 def home():
     return {
         "status": "ESP32 ChatGPT Proxy funcionando", 
-        "model": "whisper-base",
-        "version": "2.0"
+        "model": "whisper-small",
+        "version": "2.0",
+        "model_loaded": model_loaded
     }
 
 @app.route('/health')
@@ -33,7 +49,7 @@ def health():
 
 @app.route('/process_audio/', methods=['POST'])
 def process_audio():
-    temp_files = []  # Para limpiar archivos temporales
+    temp_files = []
     
     try:
         # Verificar autenticación
@@ -49,9 +65,11 @@ def process_audio():
         if file.filename == '':
             return jsonify({"error": "Nombre de archivo vacío"}), 400
         
-        # Verificar modelo
+        # Si el modelo no está cargado, intentar cargar
         if model is None:
-            return jsonify({"error": "Modelo Whisper no disponible"}), 503
+            print("🔄 Modelo no cargado, intentando cargar...")
+            if not load_model():
+                return jsonify({"error": "Modelo Whisper no disponible"}), 503
         
         print(f"📁 Procesando: {file.filename}")
         
@@ -64,14 +82,12 @@ def process_audio():
         print(f"📊 Archivo guardado: {os.path.getsize(input_path)} bytes")
         
         # Transcribir con Whisper
-        print("🎤 Transcribiendo...")
-        result = model.transcribe(input_path, language="es")
-        transcription = result["text"].strip()
+        transcription = transcribe_audio(input_path)
+        
+        if not transcription or not transcription.strip():
+            return jsonify({"error": "No se detectó audio o está vacío"}), 400
         
         print(f"📝 Transcripción: '{transcription}'")
-        
-        if not transcription:
-            return jsonify({"error": "No se detectó audio o está vacío"}), 400
         
         # Generar respuesta
         response_text = generate_response(transcription)
@@ -81,7 +97,6 @@ def process_audio():
         audio_path = text_to_speech(response_text)
         temp_files.append(audio_path)
         
-        # Verificar que el audio se generó
         if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
             return jsonify({"error": "Error generando audio de respuesta"}), 500
         
@@ -111,8 +126,42 @@ def process_audio():
             except:
                 pass
 
+def transcribe_audio(audio_path):
+    """Transcribir audio usando Whisper con Transformers"""
+    try:
+        # Cargar audio
+        waveform, sample_rate = torchaudio.load(audio_path)
+        
+        # Convertir a mono si es estéreo
+        if waveform.shape[0] > 1:
+            waveform = torch.mean(waveform, dim=0, keepdim=True)
+        
+        # Resamplear a 16kHz si es necesario
+        if sample_rate != 16000:
+            resampler = torchaudio.transforms.Resample(sample_rate, 16000)
+            waveform = resampler(waveform)
+        
+        # Convertir a numpy y aplanar
+        audio_array = waveform.squeeze().numpy()
+        
+        # Procesar con Whisper
+        input_features = processor(audio_array, sampling_rate=16000, return_tensors="pt").input_features
+        
+        # Generar transcripción
+        with torch.no_grad():
+            predicted_ids = model.generate(input_features, language="es")
+        
+        # Decodificar
+        transcription = processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
+        
+        return transcription.strip()
+        
+    except Exception as e:
+        print(f"Error en transcripción: {e}")
+        return ""
+
 def generate_response(text):
-    """Genera respuesta simulada (puedes conectar OpenAI aquí)"""
+    """Genera respuesta simulada"""
     responses = [
         f"Hola, escuché que dijiste: {text}. ¿Cómo puedo ayudarte?",
         f"Gracias por tu mensaje: {text}. ¿En qué más puedo asistirte?",
@@ -126,17 +175,16 @@ def generate_response(text):
 def text_to_speech(text, max_length=200):
     """Convierte texto a audio WAV"""
     try:
-        # Limitar longitud para evitar archivos muy grandes
+        # Limitar longitud
         if len(text) > max_length:
             text = text[:max_length] + "..."
         
         print(f"🗣️ Generando TTS para: '{text[:50]}...'")
         
-        # Crear archivo temporal para MP3
+        # Archivos temporales
         with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_mp3:
             mp3_path = temp_mp3.name
         
-        # Crear archivo temporal para WAV
         with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_wav:
             wav_path = temp_wav.name
         
@@ -144,7 +192,7 @@ def text_to_speech(text, max_length=200):
         tts = gTTS(text=text, lang='es', slow=False)
         tts.save(mp3_path)
         
-        # Convertir MP3 a WAV usando ffmpeg (disponible en Render)
+        # Convertir MP3 a WAV
         subprocess.run([
             'ffmpeg', '-y', '-i', mp3_path, 
             '-ar', '8000',  # 8kHz para ESP32
@@ -173,17 +221,18 @@ def create_silence_wav():
     """Crea un archivo WAV de silencio como fallback"""
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_file:
-            # Crear 1 segundo de silencio
             subprocess.run([
                 'ffmpeg', '-y', '-f', 'lavfi', '-i', 'anullsrc=r=8000:cl=mono', 
                 '-t', '1', '-acodec', 'pcm_s16le', temp_file.name
             ], check=True, capture_output=True)
-            
             return temp_file.name
     except:
-        # Si todo falla, crear archivo vacío
+        # Fallback: archivo vacío
         with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_file:
-            temp_file.write(b'')
+            # Crear header WAV mínimo para evitar errores
+            temp_file.write(b'RIFF\x24\x00\x00\x00WAVE')
+            temp_file.write(b'fmt \x10\x00\x00\x00\x01\x00\x01\x00\x40\x1f\x00\x00\x80\x3e\x00\x00\x02\x00\x10\x00')
+            temp_file.write(b'data\x00\x00\x00\x00')
             return temp_file.name
 
 if __name__ == '__main__':
